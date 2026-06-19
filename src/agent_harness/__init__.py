@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from agent-harness!")
+from agent_harness.cli import main
+
+__all__ = ["main"]
