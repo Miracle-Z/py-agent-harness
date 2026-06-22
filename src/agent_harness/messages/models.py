@@ -18,6 +18,14 @@ class ToolCall(BaseModel):
 class Message(BaseModel):
     # 学习说明：Message 是 Agent Loop 的统一上下文格式。
     # user/system/assistant 是对话消息；tool 是本地工具执行结果，会由模型适配层转成供应商协议。
+    # Java 写法对照：
+    # class Message {
+    #     Role role;
+    #     String content;
+    #     String name = null;
+    #     String toolCallId = null;
+    #     List<ToolCall> toolCalls = new ArrayList<>();
+    # }
     role: Role
     content: str
     name: str | None = None
