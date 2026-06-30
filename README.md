@@ -4,6 +4,12 @@
 
 我们将从零实现一个 Claude Code 风格的 Coding Agent，理解 Agent Loop、工具调用、权限控制、上下文管理与可观测性等核心机制，并在此基础上逐步构建能够排查微服务故障的 Agent。
 
+## 学习参考
+
+本项目参考 [shareAI-lab/learn-claude-code](https://github.com/shareAI-lab/learn-claude-code/tree/main) 的学习路径进行实践。该项目以 Claude Code 风格的 Agent Harness 为主线，从 Agent Loop、Tool Use、权限控制、Hooks、上下文压缩、Memory、Subagent 到 MCP 等机制逐步展开。
+
+本仓库不会直接照搬实现，而是使用 Python 工程结构重新实现核心概念，并在后续扩展到微服务故障诊断场景。
+
 ## 项目目标
 
 - 不依赖成熟 Agent 框架，从底层理解 Agent 的运行机制。
@@ -98,7 +104,9 @@ uv run mypy src
 
 ## 当前状态
 
-项目处于 **M0：工程初始化** 阶段，核心功能正在逐步实现。
+项目已完成 **M1：最小 Agent**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
+
+下一阶段进入 **M2：Coding Agent**，重点是补齐代码读取、搜索、写入和受限制 Shell 命令等基础代码操作工具。
 
 ## 安全说明
 
