@@ -86,11 +86,35 @@ uv sync
 uv run agent-harness
 ```
 
-运行质量检查：
+不带子命令时，`agent-harness` 会执行最小健康检查，用于验证包安装和命令行注册是否正常；运行后会输出：
+
+```text
+Hello from agent-harness!
+```
+
+`chat` 子命令已接入真实 AgentLoop、Anthropic 模型适配和 Coding Agent 工具注册。运行前需要配置 `ANTHROPIC_API_KEY`，并通过 `--model`、`ANTHROPIC_MODEL` 或 `MODEL_ID` 指定模型：
 
 ```bash
+# 一次性运行一个 Coding Agent 任务
+uv run agent-harness chat --model <anthropic-model-id> --root . "Read README.md and summarize the project"
+
+# 进入交互模式
+uv run agent-harness chat --model <anthropic-model-id> --root .
+```
+
+常用测试和质量检查：
+
+```bash
+# 运行全部测试；未配置外部 API key 时，集成测试会自动跳过
 uv run pytest
+
+# 只运行单元测试
+uv run pytest tests/unit
+
+# 代码风格检查
 uv run ruff check .
+
+# 类型检查
 uv run mypy src
 ```
 
@@ -104,9 +128,11 @@ uv run mypy src
 
 ## 当前状态
 
-项目已完成 **M1：最小 Agent**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
+项目已完成 **M2：Coding Agent**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
 
-下一阶段进入 **M2：Coding Agent**，重点是补齐代码读取、搜索、写入和受限制 Shell 命令等基础代码操作工具。
+M2 新增了 workspace 受限的代码操作工具：`read_file`、`write_file`、`edit_file`、`glob`、`search_text`、`shell`、`run_tests` 和 `git_diff`。这些工具可通过 `agent_harness.tools.create_coding_tool_registry()` 一次性注册到 AgentLoop。
+
+下一阶段进入 **M3：可靠性建设**，重点是补齐权限审批、超时/重试、Hooks、Tracing 和基础评测集。
 
 ## 安全说明
 
