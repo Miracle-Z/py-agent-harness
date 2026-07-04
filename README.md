@@ -83,23 +83,48 @@ git clone <repository-url>
 cd py-agent-harness
 
 uv sync
+cp .env.example .env
+# 编辑 .env，填入 API key 和模型名
 uv run agent-harness
 ```
 
-不带子命令时，`agent-harness` 会执行最小健康检查，用于验证包安装和命令行注册是否正常；运行后会输出：
+不带子命令时，`agent-harness` 会直接进入交互模式，行为接近 `learn-claude-code` 中运行脚本后进入问答循环的体验。
 
-```text
-Hello from agent-harness!
+CLI 已接入真实 AgentLoop、Anthropic/OpenAI 模型适配和 Coding Agent 工具注册。运行前需要配置模型供应商的 API key 和模型名。
+
+模型配置可以写在项目根目录的 `.env` 文件中。上面的 `cp .env.example .env` 会生成本地配置文件，随后填入自己的 key 和模型名。
+
+Anthropic 配置：
+
+```dotenv
+ANTHROPIC_API_KEY=你的 Anthropic API key
+ANTHROPIC_MODEL=claude-...
 ```
 
-`chat` 子命令已接入真实 AgentLoop、Anthropic 模型适配和 Coding Agent 工具注册。运行前需要配置 `ANTHROPIC_API_KEY`，并通过 `--model`、`ANTHROPIC_MODEL` 或 `MODEL_ID` 指定模型：
+OpenAI 配置：
+
+```dotenv
+OPENAI_API_KEY=你的 OpenAI API key
+OPENAI_MODEL=gpt-...
+
+# 可选：OpenAI 兼容网关或代理地址；使用官方 OpenAI API 时留空
+OPENAI_BASE_URL=
+```
+
+也可以不写 `.env`，直接在 shell 里 `export` 同名环境变量，或通过命令行传 `--api-key`、`--model`。
 
 ```bash
-# 一次性运行一个 Coding Agent 任务
+# Anthropic：进入交互模式
+uv run agent-harness --model <anthropic-model-id> --root .
+
+# Anthropic：一次性运行一个 Coding Agent 任务
 uv run agent-harness chat --model <anthropic-model-id> --root . "Read README.md and summarize the project"
 
-# 进入交互模式
-uv run agent-harness chat --model <anthropic-model-id> --root .
+# OpenAI：使用 OPENAI_API_KEY / OPENAI_MODEL
+uv run agent-harness --provider openai --root .
+
+# OpenAI 兼容 endpoint
+uv run agent-harness --provider openai --base-url <openai-compatible-base-url> --model <model-id> --root .
 ```
 
 常用测试和质量检查：
@@ -133,6 +158,61 @@ uv run mypy src
 M2 新增了 workspace 受限的代码操作工具：`read_file`、`write_file`、`edit_file`、`glob`、`search_text`、`shell`、`run_tests` 和 `git_diff`。这些工具可通过 `agent_harness.tools.create_coding_tool_registry()` 一次性注册到 AgentLoop。
 
 下一阶段进入 **M3：可靠性建设**，重点是补齐权限审批、超时/重试、Hooks、Tracing 和基础评测集。
+
+## 当前流程图
+
+当前主流程已经接通：
+
+```text
+uv run agent-harness
+        |
+        v
+解析 CLI 参数与工作目录
+        |
+        v
+创建 AnthropicClient/OpenAIClient + Coding Tool Registry
+        |
+        v
+AgentLoop
+        |
+        +--> 调用 LLM.complete(messages, tools)
+        |
+        +--> 如果模型请求工具：
+        |       ToolRegistry.execute(...)
+        |       执行本地 Coding Tool
+        |       将 tool result 追加回 messages
+        |       回到 LLM.complete(...)
+        |
+        +--> 如果模型不再请求工具：
+                输出最终回答
+```
+
+已注册的 Coding Agent 工具：
+
+| 工具 | 状态 | 作用 |
+| --- | --- | --- |
+| `list_files` | 已实现 | 列出 workspace 内目录 |
+| `read_file` | 已实现 | 读取 UTF-8 文本文件 |
+| `write_file` | 已实现 | 创建或覆盖文件 |
+| `edit_file` | 已实现 | 精确替换一段文本 |
+| `glob` | 已实现 | 按 glob pattern 查找文件 |
+| `search_text` | 已实现 | 搜索文本或正则 |
+| `shell` | 已实现，受限版 | 执行受限制命令 |
+| `run_tests` | 已实现 | 运行项目测试命令 |
+| `git_diff` | 已实现 | 查看 Git diff |
+
+后续能力入口：
+
+| 能力 | 状态 | 对应里程碑 |
+| --- | --- | --- |
+| 配置校验与更友好的错误提示 | 未实现 | M3 |
+| 工具权限审批 | 未实现 | M3 |
+| Hooks 与 Tracing | 未实现 | M3 |
+| 超时、重试与错误恢复 | 未实现 | M3 |
+| Todo、Session、上下文压缩、Memory | 未实现 | M4 |
+| MCP、Subagent、后台任务 | 未实现 | M5 |
+| 日志、指标、Trace 诊断工具 | 未实现 | M6 |
+| 隔离环境修复与人工审核 | 未实现 | M7 |
 
 ## 安全说明
 
