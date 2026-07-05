@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_harness.tools.base import ToolResult
+from agent_harness.tools.workspace import resolve_workspace_path
 
 
 @dataclass
@@ -33,8 +34,7 @@ class ListFilesTool:
     async def run(self, path: str = ".") -> ToolResult:
         # 学习说明：工具必须自己做边界检查。LLM 只能提出动作请求，
         # Harness 决定这个请求是否安全、是否允许执行。
-        target = (self.root / path).resolve()
-        self._ensure_inside_root(target)
+        target = resolve_workspace_path(self.root, path)
 
         if not target.exists():
             msg = f"Path does not exist: {path}"
@@ -45,10 +45,3 @@ class ListFilesTool:
 
         files = [entry.relative_to(self.root).as_posix() for entry in sorted(target.iterdir())]
         return ToolResult(output=files)
-
-    def _ensure_inside_root(self, path: Path) -> None:
-        try:
-            path.relative_to(self.root)
-        except ValueError as exc:
-            msg = f"Path escapes tool root: {path}"
-            raise PermissionError(msg) from exc

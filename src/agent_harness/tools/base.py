@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any, Awaitable, Protocol
 
 
@@ -23,6 +24,7 @@ class Tool(Protocol):
     description: str
     input_schema: dict[str, Any]
 
-    def run(self, **kwargs: Any) -> ToolResult | Awaitable[ToolResult]:
+    @property
+    def run(self) -> Callable[..., ToolResult | Awaitable[ToolResult]]:
         """Execute the tool and return a structured result."""
         ...
