@@ -27,9 +27,11 @@
 
 ### M3：可靠性建设
 
-- 实现权限审批、超时和重试
-- 记录 Agent 执行轨迹
-- 建立基础评测集和回归测试
+- 已实现权限审批：硬拒绝、审批规则和 `ask|allow|deny` 审批模式
+- 已实现 Hooks：`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、`Error` 等扩展点
+- 已实现 Tracing：通过 Hooks 记录 LLM 调用、工具执行和停止事件
+- 已实现错误恢复：429/529 重试、`max_tokens` 截断恢复、上下文超限 reactive compact
+- 已建立 M3 回归单测和基础评测用例
 
 ### M4：长任务能力
 

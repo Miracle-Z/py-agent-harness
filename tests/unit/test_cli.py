@@ -71,6 +71,28 @@ def test_chat_command_can_use_openai_provider(monkeypatch) -> None:
     assert "fake response: hello" in result.output
 
 
+def test_chat_command_auto_detects_openai_settings(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(cli, "OpenAIClient", FakeOpenAIClient)
+    monkeypatch.setattr(
+        cli,
+        "_load_settings",
+        lambda: cli.CLISettings(openai_model="fake-model", openai_api_key="fake-key"),
+    )
+
+    result = runner.invoke(cli.app, ["chat", "hello"])
+
+    assert result.exit_code == 0
+    assert "fake response: hello" in result.output
+
+
+def test_auto_provider_prefers_openai_model_settings() -> None:
+    settings = cli.CLISettings(openai_model="openai-model", openai_api_key="openai-key")
+
+    assert cli._resolve_provider("auto", None, settings) == "openai"
+    assert cli._resolve_model("openai", None, settings) == "openai-model"
+
+
 def test_resolve_model_falls_back_to_model_id(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)

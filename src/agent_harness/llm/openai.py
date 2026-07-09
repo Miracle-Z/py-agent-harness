@@ -117,7 +117,12 @@ class OpenAIClient:
             for tool_call in (self._get(message, "tool_calls") or [])
             if self._get(tool_call, "type") == "function"
         ]
-        return Message(role="assistant", content=content, tool_calls=tool_calls)
+        return Message(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls,
+            stop_reason=_normalize_finish_reason(self._get(choice, "finish_reason")),
+        )
 
     def _get(self, value: object, key: str, default: Any = None) -> Any:
         if isinstance(value, Mapping):
@@ -140,3 +145,13 @@ class OpenAIClient:
 def _looks_like_html(value: str) -> bool:
     lowered = value.lstrip().lower()
     return lowered.startswith("<!doctype html") or lowered.startswith("<html")
+
+
+def _normalize_finish_reason(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if value == "length":
+        return "max_tokens"
+    if value == "tool_calls":
+        return "tool_use"
+    return value

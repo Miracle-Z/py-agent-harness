@@ -117,7 +117,12 @@ class AnthropicClient:
             for block in content
             if getattr(block, "type", None) == "tool_use"
         ]
-        return Message(role="assistant", content="\n".join(text_parts), tool_calls=tool_calls)
+        return Message(
+            role="assistant",
+            content="\n".join(text_parts),
+            tool_calls=tool_calls,
+            stop_reason=getattr(response, "stop_reason", None),
+        )
 
     def _coerce_tool_arguments(self, value: object) -> dict[str, Any]:
         if isinstance(value, Mapping):

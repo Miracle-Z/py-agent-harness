@@ -31,3 +31,4 @@ class Message(BaseModel):
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    stop_reason: str | None = None

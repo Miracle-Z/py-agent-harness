@@ -8,13 +8,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 import typer
 
 from agent_harness.agent import AgentLoop
+from agent_harness.hooks import HookEvent, HookManager
 from agent_harness.llm.anthropic import AnthropicClient
 from agent_harness.llm.base import LLMClient
 from agent_harness.llm.openai import OpenAIClient
 from agent_harness.messages import Message
+from agent_harness.observability import InMemoryTracer, TraceEvent
+from agent_harness.permissions import (
+    AlwaysAllowApprover,
+    DenyByDefaultApprover,
+    InteractiveApprover,
+    PermissionManager,
+)
+from agent_harness.recovery import RecoveryConfig, RecoveryManager
 from agent_harness.tools import create_coding_tool_registry
 
-Provider = Literal["anthropic", "openai"]
+Provider = Literal["auto", "anthropic", "openai"]
+ResolvedProvider = Literal["anthropic", "openai"]
+ApprovalMode = Literal["ask", "allow", "deny"]
 
 app = typer.Typer(help="运行 Python Agent Harness。")
 
@@ -34,6 +45,7 @@ class CLISettings(BaseSettings):
     openai_model: str | None = None
     openai_base_url: str | None = None
     model_id: str | None = None
+    fallback_model_id: str | None = None
 
 
 @app.callback(invoke_without_command=True)
@@ -52,10 +64,10 @@ def _main_callback(
         help="模型 ID；默认依次读取 ANTHROPIC_MODEL、OPENAI_MODEL、MODEL_ID。",
     ),
     provider: Provider = typer.Option(
-        "anthropic",
+        "auto",
         "--provider",
         "-p",
-        help="模型供应商，可选 anthropic 或 openai。",
+        help="模型供应商，可选 auto、anthropic 或 openai。",
     ),
     api_key: str | None = typer.Option(
         None,
@@ -79,6 +91,11 @@ def _main_callback(
         min=0,
         help="AgentLoop 停止前允许的最大工具调用轮数。",
     ),
+    approval_mode: ApprovalMode = typer.Option(
+        "ask",
+        "--approval-mode",
+        help="工具权限审批模式：ask 交互确认，allow 自动允许，deny 自动拒绝需审批操作。",
+    ),
     debug: bool = typer.Option(
         False,
         "--debug",
@@ -97,6 +114,7 @@ def _main_callback(
             base_url=base_url,
             max_tokens=max_tokens,
             max_tool_rounds=max_tool_rounds,
+            approval_mode=approval_mode,
             debug=debug,
         )
 
@@ -120,10 +138,10 @@ def chat(
         help="模型 ID；默认依次读取 ANTHROPIC_MODEL、OPENAI_MODEL、MODEL_ID。",
     ),
     provider: Provider = typer.Option(
-        "anthropic",
+        "auto",
         "--provider",
         "-p",
-        help="模型供应商，可选 anthropic 或 openai。",
+        help="模型供应商，可选 auto、anthropic 或 openai。",
     ),
     api_key: str | None = typer.Option(
         None,
@@ -147,6 +165,11 @@ def chat(
         min=0,
         help="AgentLoop 停止前允许的最大工具调用轮数。",
     ),
+    approval_mode: ApprovalMode = typer.Option(
+        "ask",
+        "--approval-mode",
+        help="工具权限审批模式：ask 交互确认，allow 自动允许，deny 自动拒绝需审批操作。",
+    ),
     debug: bool = typer.Option(
         False,
         "--debug",
@@ -163,6 +186,7 @@ def chat(
         base_url=base_url,
         max_tokens=max_tokens,
         max_tool_rounds=max_tool_rounds,
+        approval_mode=approval_mode,
         debug=debug,
     )
 
@@ -177,6 +201,7 @@ def _chat(
     base_url: str | None,
     max_tokens: int,
     max_tool_rounds: int,
+    approval_mode: ApprovalMode,
     debug: bool,
 ) -> None:
     resolved_root = root.resolve()
@@ -184,14 +209,15 @@ def _chat(
         raise typer.BadParameter(f"root 必须是已存在的目录：{root}")
 
     settings = _load_settings()
-    resolved_model = _resolve_model(provider, model, settings)
+    resolved_provider = _resolve_provider(provider, model, settings)
+    resolved_model = _resolve_model(resolved_provider, model, settings)
     if not resolved_model:
         raise typer.BadParameter(
             "必须指定模型。请传入 --model，或设置 ANTHROPIC_MODEL、OPENAI_MODEL、MODEL_ID。"
         )
 
     llm = _create_llm_client(
-        provider=provider,
+        provider=resolved_provider,
         model=resolved_model,
         api_key=api_key,
         base_url=base_url,
@@ -200,23 +226,35 @@ def _chat(
     )
     if debug:
         _print_debug_config(
-            provider=provider,
+            provider=resolved_provider,
             model=resolved_model,
-            api_key=_resolve_api_key(provider, api_key, settings),
+            api_key=_resolve_api_key(resolved_provider, api_key, settings),
             base_url=base_url,
             settings=settings,
         )
+    hooks = _create_default_hooks(
+        root=resolved_root,
+        approval_mode=approval_mode,
+    )
+    tracer = InMemoryTracer() if debug else None
+    if tracer:
+        tracer.install(hooks)
+
     loop = AgentLoop(
         llm=llm,
         tools=create_coding_tool_registry(resolved_root),
         max_tool_rounds=max_tool_rounds,
+        hooks=hooks,
+        recovery=RecoveryManager(
+            RecoveryConfig(fallback_model=_non_empty(settings.fallback_model_id))
+        ),
     )
     messages = _initial_messages(resolved_root)
 
     # 单次模式
     if prompt:
         messages.append(Message(role="user", content=prompt))
-        response = _run_loop(loop, messages, debug=debug)
+        response = _run_loop(loop, messages, debug=debug, tracer=tracer)
         typer.echo(response.content)
         return
     # 对话模式
@@ -235,7 +273,7 @@ def _chat(
             continue
 
         messages.append(Message(role="user", content=user_input))
-        response = _run_loop(loop, messages, debug=debug)
+        response = _run_loop(loop, messages, debug=debug, tracer=tracer)
         typer.echo(response.content)
 
 
@@ -243,8 +281,27 @@ def _load_settings() -> CLISettings:
     return CLISettings()
 
 
-def _resolve_model(
+def _resolve_provider(
     provider: Provider,
+    model: str | None,
+    settings: CLISettings | None = None,
+) -> ResolvedProvider:
+    settings = settings or _load_settings()
+    if provider != "auto":
+        return provider
+
+    if _non_empty(model):
+        return _infer_provider_from_model(model) or "anthropic"
+
+    if _non_empty(settings.openai_model):
+        return "openai"
+    if _non_empty(settings.anthropic_model):
+        return "anthropic"
+    return _infer_provider_from_settings(settings)
+
+
+def _resolve_model(
+    provider: ResolvedProvider,
     model: str | None,
     settings: CLISettings | None = None,
 ) -> str | None:
@@ -256,7 +313,7 @@ def _resolve_model(
 
 
 def _resolve_api_key(
-    provider: Provider,
+    provider: ResolvedProvider,
     api_key: str | None,
     settings: CLISettings | None = None,
 ) -> str | None:
@@ -270,7 +327,7 @@ def _resolve_api_key(
 
 def _create_llm_client(
     *,
-    provider: Provider,
+    provider: ResolvedProvider,
     model: str,
     api_key: str | None,
     base_url: str | None,
@@ -291,7 +348,7 @@ def _create_llm_client(
 
 def _print_debug_config(
     *,
-    provider: Provider,
+    provider: ResolvedProvider,
     model: str,
     api_key: str | None,
     base_url: str | None,
@@ -316,6 +373,24 @@ def _non_empty(value: str | None) -> str | None:
     return stripped or None
 
 
+def _infer_provider_from_settings(settings: CLISettings) -> ResolvedProvider:
+    if _non_empty(settings.openai_api_key) and not _non_empty(settings.anthropic_api_key):
+        return "openai"
+    return "anthropic"
+
+
+def _infer_provider_from_model(model: str | None) -> ResolvedProvider | None:
+    model = _non_empty(model)
+    if model is None:
+        return None
+    lowered = model.lower()
+    if lowered.startswith(("gpt-", "o1", "o3", "o4", "openai/")):
+        return "openai"
+    if lowered.startswith(("claude-", "anthropic/")):
+        return "anthropic"
+    return None
+
+
 def _initial_messages(root: Path) -> list[Message]:
     return [
         Message(
@@ -325,7 +400,31 @@ def _initial_messages(root: Path) -> list[Message]:
     ]
 
 
-def _run_loop(loop: AgentLoop, messages: list[Message], *, debug: bool = False) -> Message:
+def _create_default_hooks(*, root: Path, approval_mode: ApprovalMode) -> HookManager:
+    hooks = HookManager()
+    permission_manager = PermissionManager(
+        root=root,
+        approver=_create_approver(approval_mode),
+    )
+    hooks.register(HookEvent.PRE_TOOL_USE, permission_manager.pre_tool_use_hook)
+    return hooks
+
+
+def _create_approver(approval_mode: ApprovalMode):
+    if approval_mode == "allow":
+        return AlwaysAllowApprover()
+    if approval_mode == "deny":
+        return DenyByDefaultApprover()
+    return InteractiveApprover()
+
+
+def _run_loop(
+    loop: AgentLoop,
+    messages: list[Message],
+    *,
+    debug: bool = False,
+    tracer: InMemoryTracer | None = None,
+) -> Message:
     previous_len = len(messages)
     try:
         updated_messages = asyncio.run(loop.run_with_history(messages))
@@ -336,6 +435,8 @@ def _run_loop(loop: AgentLoop, messages: list[Message], *, debug: bool = False) 
     messages[:] = updated_messages
     if debug:
         _print_debug_messages(updated_messages[previous_len:])
+        if tracer:
+            _print_trace_events(tracer.drain())
     response = updated_messages[-1]
     if response.role == "assistant" and not response.content and not response.tool_calls:
         typer.echo(
@@ -354,6 +455,16 @@ def _print_debug_messages(new_messages: list[Message]) -> None:
         )
         if message.name:
             summary += f" 工具名={message.name}"
+        typer.echo(summary)
+
+
+def _print_trace_events(events: list[TraceEvent]) -> None:
+    for event in events:
+        summary = f"trace：事件={event.name}"
+        if event.duration_ms is not None:
+            summary += f" 耗时ms={event.duration_ms:.2f}"
+        for key, value in event.metadata.items():
+            summary += f" {key}={value}"
         typer.echo(summary)
 
 

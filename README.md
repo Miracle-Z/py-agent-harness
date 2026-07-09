@@ -59,6 +59,27 @@
 
 详细计划见 [docs/roadmap.md](docs/roadmap.md)。
 
+## 学习章节映射
+
+项目阶段与 `learn-claude-code` 章节的对应关系如下：
+
+| 项目阶段 | 对应章节 | 说明 |
+| --- | --- | --- |
+| M0：工程初始化 | 无直接章节 | CI、Ruff、Mypy、Pytest、协作规范是 Python 工程化底座，`learn-claude-code` 主要讲 Harness 机制。 |
+| M1：最小 Agent | `s01_agent_loop` | Agent Loop、messages、LLM 调用、工具结果回填。当前项目的 AgentLoop 已对应这一章。 |
+| M2：Coding Agent | `s02_tool_use` | 工具注册、工具分发、文件读写改、glob/search、shell、git diff。当前项目基本已完成，并比 `s02` 更工程化。 |
+| M3：可靠性建设 | `s03_permission`、`s04_hooks`、`s11_error_recovery` | 权限审批、Hook 扩展点、错误分类、重试、恢复。Tracing 可以放在 Hooks 体系里做。 |
+| M4：长任务能力 | `s05_todo_write`、`s08_context_compact`、`s09_memory`、`s10_system_prompt`、`s12_task_system` | Todo、Session、上下文压缩、Memory、运行时组装 system prompt、持久化任务图。 |
+| M5：扩展能力 | `s06_subagent`、`s13_background_tasks`、`s15_agent_teams`、`s16_team_protocols`、`s17_autonomous_agents`、`s18_worktree_isolation`、`s19_mcp_plugin` | Subagent、后台任务、多 Agent 协作、协议、自主认领、worktree 隔离、MCP 外部工具。 |
+| M6：微服务故障诊断 | `s07_skill_loading`、`s10_system_prompt`、`s12_task_system`、`s19_mcp_plugin`、`s20_comprehensive` | 诊断场景没有单独章节，需要复用知识加载、提示词组装、任务拆解、外部工具接入和综合 Agent 架构。 |
+| M7：诊断与修复 | `s03_permission`、`s04_hooks`、`s11_error_recovery`、`s18_worktree_isolation`、`s20_comprehensive` | 人工审批、执行前后 Hook、失败恢复、隔离目录修复、最终集成闭环。 |
+
+当前项目状态可以理解为：
+
+- 已覆盖：`s01_agent_loop`、`s02_tool_use`、`s03_permission`、`s04_hooks`、`s11_error_recovery`
+- 下一步重点：`s05_todo_write`、`s08_context_compact`、`s09_memory`、`s10_system_prompt`、`s12_task_system`
+- 微服务诊断阶段再引入：`s07_skill_loading`、`s19_mcp_plugin`、`s20_comprehensive`
+
 ## 项目结构
 
 ```text
@@ -120,6 +141,9 @@ uv run agent-harness --model <anthropic-model-id> --root .
 # Anthropic：一次性运行一个 Coding Agent 任务
 uv run agent-harness chat --model <anthropic-model-id> --root . "Read README.md and summarize the project"
 
+# 工具审批模式：ask 交互确认，allow 自动允许，deny 自动拒绝需审批操作
+uv run agent-harness chat --approval-mode ask --model <anthropic-model-id> --root . "Edit README.md"
+
 # OpenAI：使用 OPENAI_API_KEY / OPENAI_MODEL
 uv run agent-harness --provider openai --root .
 
@@ -134,7 +158,7 @@ uv run agent-harness --provider openai --base-url <openai-compatible-base-url> -
 uv run pytest
 
 # 只运行单元测试
-uv run pytest tests/unit
+uv run pytest tests/unit -vv
 
 # 代码风格检查
 uv run ruff check .
@@ -153,11 +177,19 @@ uv run mypy src
 
 ## 当前状态
 
-项目已完成 **M2：Coding Agent**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
+项目已完成 **M3：可靠性建设**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic/OpenAI Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
 
 M2 新增了 workspace 受限的代码操作工具：`read_file`、`write_file`、`edit_file`、`glob`、`search_text`、`shell`、`run_tests` 和 `git_diff`。这些工具可通过 `agent_harness.tools.create_coding_tool_registry()` 一次性注册到 AgentLoop。
 
-下一阶段进入 **M3：可靠性建设**，重点是补齐权限审批、超时/重试、Hooks、Tracing 和基础评测集。
+M3 新增了权限审批、Hooks、Tracing 和错误恢复能力：
+
+- `PermissionManager` 在 `PreToolUse` 阶段执行硬拒绝、规则匹配和人工审批；CLI 支持 `--approval-mode ask|allow|deny`。
+- `HookManager` 提供 `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop` 等扩展点，AgentLoop 不直接硬编码权限和追踪逻辑。
+- `InMemoryTracer` 通过 Hooks 记录 LLM 调用、工具执行、Stop 和 Error 事件；`--debug` 会打印 trace。
+- `RecoveryManager` 支持 429/529 瞬态错误重试、`max_tokens` 截断恢复、prompt/context too long 后 reactive compact。
+- M3 评测用例记录在 [evals/m3_reliability_cases.md](evals/m3_reliability_cases.md)。
+
+下一阶段进入 **M4：长任务能力**，重点是补齐 Todo、Session、上下文压缩、Memory、运行时 system prompt 和持久化任务图。
 
 ## 当前流程图
 
@@ -175,15 +207,22 @@ uv run agent-harness
         v
 AgentLoop
         |
-        +--> 调用 LLM.complete(messages, tools)
+        +--> PreLLMCall Hook / Tracing
+        |
+        +--> RecoveryManager 包裹 LLM.complete(messages, tools)
+        |       429/529 重试、max_tokens 恢复、context too long compact
         |
         +--> 如果模型请求工具：
+        |       PreToolUse Hook
+        |       PermissionManager 审批
         |       ToolRegistry.execute(...)
         |       执行本地 Coding Tool
+        |       PostToolUse Hook / Tracing
         |       将 tool result 追加回 messages
         |       回到 LLM.complete(...)
         |
         +--> 如果模型不再请求工具：
+                Stop Hook
                 输出最终回答
 ```
 
@@ -193,22 +232,22 @@ AgentLoop
 | --- | --- | --- |
 | `list_files` | 已实现 | 列出 workspace 内目录 |
 | `read_file` | 已实现 | 读取 UTF-8 文本文件 |
-| `write_file` | 已实现 | 创建或覆盖文件 |
-| `edit_file` | 已实现 | 精确替换一段文本 |
+| `write_file` | 已实现，可审批 | 创建或覆盖文件 |
+| `edit_file` | 已实现，可审批 | 精确替换一段文本 |
 | `glob` | 已实现 | 按 glob pattern 查找文件 |
 | `search_text` | 已实现 | 搜索文本或正则 |
-| `shell` | 已实现，受限版 | 执行受限制命令 |
-| `run_tests` | 已实现 | 运行项目测试命令 |
+| `shell` | 已实现，受限版，可审批 | 执行受限制命令 |
+| `run_tests` | 已实现，自定义命令可审批 | 运行项目测试命令 |
 | `git_diff` | 已实现 | 查看 Git diff |
 
 后续能力入口：
 
 | 能力 | 状态 | 对应里程碑 |
 | --- | --- | --- |
-| 配置校验与更友好的错误提示 | 未实现 | M3 |
-| 工具权限审批 | 未实现 | M3 |
-| Hooks 与 Tracing | 未实现 | M3 |
-| 超时、重试与错误恢复 | 未实现 | M3 |
+| 配置校验与更友好的错误提示 | 部分实现 | M3 |
+| 工具权限审批 | 已实现 | M3 |
+| Hooks 与 Tracing | 已实现 | M3 |
+| 超时、重试与错误恢复 | 已实现 | M3 |
 | Todo、Session、上下文压缩、Memory | 未实现 | M4 |
 | MCP、Subagent、后台任务 | 未实现 | M5 |
 | 日志、指标、Trace 诊断工具 | 未实现 | M6 |
@@ -216,7 +255,7 @@ AgentLoop
 
 ## 安全说明
 
-本项目未来将支持文件修改和 Shell 命令执行。默认应限制 Agent 的工作目录和命令权限，危险操作必须经过人工审批。请勿在未隔离的生产环境中直接运行。
+本项目支持文件修改和受限制 Shell 命令执行。默认应限制 Agent 的工作目录和命令权限，危险操作必须经过人工审批。请勿在未隔离的生产环境中直接运行。
 
 ## License
 
