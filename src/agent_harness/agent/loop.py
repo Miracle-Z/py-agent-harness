@@ -89,6 +89,7 @@ class AgentLoop:
                 # 学习说明：ToolRegistry 根据模型给出的工具名做分发。
                 # 这里不关心具体工具是读文件、搜索还是跑命令，Loop 因此保持稳定。
                 # 对应 s03_permission + s04_hooks：权限检查注册为 PreToolUse hook，命中 deny/ask 拒绝时不执行工具。
+                #将判断逻辑直接写在循环里
                 pre_tool_result = await self.hooks.trigger(
                     HookEvent.PRE_TOOL_USE,
                     messages=messages,

@@ -59,12 +59,23 @@ HookCallback = Callable[[HookContext], HookReturn | Awaitable[HookReturn]]
 class HookManager:
     def __init__(self) -> None:
         # 为每个事件预置 callback 列表，后续 register 只需要 append。
+        # 等价于:
+        # self._callbacks = {
+        #     HookEvent.USER_PROMPT_SUBMIT: [],
+        #     HookEvent.PRE_LLM_CALL: [],
+        #     HookEvent.POST_LLM_CALL: [],
+        #     HookEvent.PRE_TOOL_USE: [],
+        #     HookEvent.POST_TOOL_USE: [],
+        #     HookEvent.STOP: [],
+        #     HookEvent.ERROR: [],
+        # }
         self._callbacks: dict[HookEvent, list[HookCallback]] = {
             event: [] for event in HookEvent
         }
 
     def register(self, event: HookEvent | str, callback: HookCallback) -> None:
         # 支持传 HookEvent，也支持直接传字符串；这里统一规范化成 HookEvent。
+        # 在对应HookEvent(event)列表下，添加 callback 事件，并且会按顺序执行。
         self._callbacks[HookEvent(event)].append(callback)
 
     async def trigger(

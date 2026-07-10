@@ -236,6 +236,7 @@ def _chat(
         root=resolved_root,
         approval_mode=approval_mode,
     )
+    # 调试模式下添加 tracer 打印调用信息
     tracer = InMemoryTracer() if debug else None
     if tracer:
         tracer.install(hooks)

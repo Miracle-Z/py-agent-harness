@@ -105,7 +105,7 @@ def test_interactive_approver_uses_chinese_prompt(tmp_path: Path) -> None:
     assert approved is True
     assert outputs[0] == "\n需要权限确认：write_file 需要权限确认"
     assert outputs[1].startswith("工具调用：write_file(")
-    assert prompts == ["是否允许执行？[y/N] "]
+    assert prompts == ["是否允许执行？[y/n] "]
 
 
 @pytest.mark.asyncio
