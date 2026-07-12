@@ -4,6 +4,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from agent_harness.context import ContextManager
 from agent_harness.hooks import HookEvent, HookManager
 from agent_harness.llm.base import LLMClient
 from agent_harness.messages.models import Message
@@ -23,6 +24,23 @@ class AgentLoop:
     hooks: HookManager = field(default_factory=HookManager)
     # 对应 learn-claude-code s11_error_recovery：LLM 调用由恢复层包裹，支持重试、截断恢复和上下文超限处理。
     recovery: RecoveryManager | None = field(default_factory=RecoveryManager)
+    # 对应 s08_context_compact：每轮 LLM 调用前执行便宜优先的主动压缩；默认关闭以保持 M1-M3 API 行为。
+    context_manager: ContextManager | None = None
+    todo_reminder_rounds: int | None = 3
+    _rounds_since_todo: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.todo_reminder_rounds is not None and self.todo_reminder_rounds < 1:
+            msg = "todo_reminder_rounds must be positive or None"
+            raise ValueError(msg)
+        # 主动压缩和 prompt-too-long 的应急压缩必须共享同一套协议分组、
+        # transcript 与摘要策略，避免出现两种互不兼容的历史形态。
+        if (
+            self.context_manager is not None
+            and self.recovery is not None
+            and self.recovery.context_manager is None
+        ):
+            self.recovery.context_manager = self.context_manager
 
     async def run(self, prompt_or_messages: str | Sequence[Message]) -> Message:
         messages = await self.run_with_history(prompt_or_messages)
@@ -39,15 +57,49 @@ class AgentLoop:
                 metadata={"prompt": messages[-1].content},
             )
         recovery_state = RecoveryState(current_model=getattr(self.llm, "model", None))
+        has_todo_tool = any(tool.name == "todo_write" for tool in tool_definitions)
 
         for tool_round in range(self.max_tool_rounds + 1):
+            if (
+                has_todo_tool
+                and self.todo_reminder_rounds is not None
+                and self._rounds_since_todo >= self.todo_reminder_rounds
+            ):
+                messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "<reminder>Review the current plan and call todo_write with the "
+                            "complete updated list.</reminder>"
+                        ),
+                    )
+                )
+                self._rounds_since_todo = 0
+            compaction_stages: tuple[str, ...] = ()
+            if self.context_manager is not None:
+                try:
+                    compaction = await self.context_manager.prepare(messages)
+                except Exception as exc:
+                    # 压缩是上下文治理层，不应因为摘要器或 transcript 写入失败直接破坏 Agent Loop。
+                    await self.hooks.trigger(
+                        HookEvent.ERROR,
+                        messages=messages,
+                        error=exc,
+                        metadata={"stage": "context_compaction", "tool_round": tool_round},
+                    )
+                else:
+                    messages[:] = compaction.messages
+                    compaction_stages = compaction.stages
             # 学习说明：每一轮都把完整上下文和当前可用工具定义交给模型。
             # 工具定义只是“菜单”，模型只能请求工具；真正执行仍发生在本地 Harness。
             # 对应 s04_hooks：PreLLMCall 是本项目扩展出的 LLM 调用前 hook，Tracing 也挂在这里。
             await self.hooks.trigger(
                 HookEvent.PRE_LLM_CALL,
                 messages=messages,
-                metadata={"tool_round": tool_round},
+                metadata={
+                    "tool_round": tool_round,
+                    "compaction_stages": compaction_stages,
+                },
             )
             # 对应 s11_error_recovery：这里不再裸调 llm.complete，而是通过 RecoveryManager 处理 429/529、max_tokens 和 context too long。
             completion = await self._complete_assistant_message(
@@ -82,7 +134,28 @@ class AgentLoop:
                     continue
                 return messages
 
+            if any(tool_call.name == "todo_write" for tool_call in assistant_message.tool_calls):
+                self._rounds_since_todo = 0
+            elif has_todo_tool:
+                self._rounds_since_todo += 1
+
             if tool_round >= self.max_tool_rounds:
+                for tool_call in assistant_message.tool_calls:
+                    messages.append(
+                        self._tool_message(
+                            tool_call.id,
+                            tool_call.name,
+                            ToolResult(
+                                output={
+                                    "error": "ToolRoundLimitExceeded",
+                                    "message": (
+                                        "Tool call was not executed because max_tool_rounds "
+                                        "was reached."
+                                    ),
+                                }
+                            ),
+                        )
+                    )
                 break
 
             for tool_call in assistant_message.tool_calls:
@@ -125,6 +198,11 @@ class AgentLoop:
                         }
                     )
 
+                # 先记录观察结果，再触发 PostToolUse。即使日志/追踪 hook 自身失败，
+                # Session 的 finally-checkpoint 也能知道副作用已经发生，避免恢复后重复执行。
+                messages.append(
+                    self._tool_message(tool_call.id, tool_call.name, result)
+                )
                 # 对应 s04_hooks：PostToolUse 在工具执行后触发，Tracing 和后处理逻辑挂在这里。
                 await self.hooks.trigger(
                     HookEvent.POST_TOOL_USE,
@@ -133,9 +211,6 @@ class AgentLoop:
                     tool_result=result,
                     metadata={"tool_round": tool_round},
                 )
-                messages.append(
-                    self._tool_message(tool_call.id, tool_call.name, result)
-                )
 
         msg = f"Tool calling exceeded max_tool_rounds={self.max_tool_rounds}"
         raise RuntimeError(msg)
@@ -143,6 +218,10 @@ class AgentLoop:
     def _normalize_messages(self, prompt_or_messages: str | Sequence[Message]) -> list[Message]:
         if isinstance(prompt_or_messages, str):
             return [Message(role="user", content=prompt_or_messages)]
+        if isinstance(prompt_or_messages, list):
+            # CLI/session callers intentionally share this list so a finally-checkpoint can
+            # preserve tool observations even when a later hook or tool-round limit fails.
+            return prompt_or_messages
         return list(prompt_or_messages)
 
     async def _complete_assistant_message(

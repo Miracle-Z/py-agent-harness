@@ -1,4 +1,9 @@
-from agent_harness.tools.coding import create_coding_tool_registry, create_coding_tools
+from agent_harness.tools.coding import (
+    create_coding_tool_registry,
+    create_coding_tools,
+    create_m4_tool_registry,
+    register_m4_tools,
+)
 from agent_harness.tools.base import Tool, ToolDefinition, ToolResult
 from agent_harness.tools.file_io import EditFileTool, ReadFileTool, WriteFileTool
 from agent_harness.tools.git_tools import GitDiffTool
@@ -23,4 +28,6 @@ __all__ = [
     "WriteFileTool",
     "create_coding_tool_registry",
     "create_coding_tools",
+    "create_m4_tool_registry",
+    "register_m4_tools",
 ]

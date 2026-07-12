@@ -7,6 +7,7 @@ import asyncio
 import inspect
 import random
 
+from agent_harness.context import ContextManager
 from agent_harness.llm.base import LLMClient
 from agent_harness.messages.models import Message
 from agent_harness.tools.base import ToolDefinition
@@ -74,9 +75,11 @@ class RecoveryManager:
         config: RecoveryConfig | None = None,
         *,
         sleep: SleepFunc = asyncio.sleep,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self.config = config or RecoveryConfig()
         self._sleep = sleep
+        self.context_manager = context_manager
 
     async def complete(
         self,
@@ -94,15 +97,29 @@ class RecoveryManager:
             try:
                 # 普通路径：先执行带 retry 的 LLM 调用。
                 message = await self._complete_with_retry(llm, messages, tools, state)
+                # reactive retry is scoped to one failed API call, not the whole AgentLoop run.
+                state.has_attempted_reactive_compact = False
             except Exception as exc:
                 kind = classify_llm_error(exc)
                 if kind == LLMErrorKind.PROMPT_TOO_LONG:
                     # 上下文太长时，先做一次 reactive compact：保留 system 和最近窗口消息。
                     if not state.has_attempted_reactive_compact:
-                        messages[:] = reactive_compact(
-                            messages,
-                            window=self.config.compact_message_window,
-                        )
+                        if self.context_manager is not None:
+                            try:
+                                compacted = await self.context_manager.reactive(messages)
+                            except Exception:
+                                # transcript/summary failures must not disable the final cheap fallback.
+                                messages[:] = reactive_compact(
+                                    messages,
+                                    window=self.config.compact_message_window,
+                                )
+                            else:
+                                messages[:] = compacted.messages
+                        else:
+                            messages[:] = reactive_compact(
+                                messages,
+                                window=self.config.compact_message_window,
+                            )
                         state.has_attempted_reactive_compact = True
                         continue
                     # 如果 compact 后仍然太长，说明当前输入或保留窗口本身仍超限，恢复层只能返回错误消息。
@@ -123,7 +140,7 @@ class RecoveryManager:
                 )
 
             # 正常完成或工具调用停止，不需要恢复，直接交回 AgentLoop。
-            if message.stop_reason != "max_tokens":
+            if message.stop_reason != "max_tokens" or message.tool_calls:
                 return CompletionResult(message)
 
             # 第一次输出截断时，优先提高 max_tokens 后重试，不把 partial 输出塞进历史。
@@ -236,16 +253,50 @@ def retry_delay(
 
 
 def reactive_compact(messages: Sequence[Message], *, window: int = 5) -> list[Message]:
-    # reactive compact 是失败后的兜底压缩：先保留 system，再保留最近 window 条非 system 消息。
-    # 如果单条用户输入或工具输出本身已经超出模型上下文，这里无法真正压缩内容，只能在下一次失败时返回错误。
+    # reactive compact 是失败后的兜底压缩。assistant tool_calls 与其连续 tool results
+    # 组成不可拆分的协议组，窗口边界只能落在组与组之间。
     system_messages = [message for message in messages if message.role == "system"]
-    tail = [message for message in messages if message.role != "system"][-window:]
+    non_system = [message for message in messages if message.role != "system"]
+    groups: list[list[Message]] = []
+    index = 0
+    while index < len(non_system):
+        message = non_system[index]
+        if message.role == "assistant" and message.tool_calls:
+            expected_ids = {tool_call.id for tool_call in message.tool_calls}
+            group = [message]
+            index += 1
+            while index < len(non_system):
+                candidate = non_system[index]
+                if candidate.role != "tool" or candidate.tool_call_id not in expected_ids:
+                    break
+                group.append(candidate)
+                index += 1
+            groups.append(group)
+            continue
+        groups.append([message])
+        index += 1
+
+    selected: list[list[Message]] = []
+    selected_size = 0
+    for group in reversed(groups):
+        if selected and selected_size >= window:
+            break
+        selected.append(group)
+        selected_size += len(group)
+    selected.reverse()
+    tail = [message for group in selected for message in group]
+    reminder = "[Reactive compact] Earlier conversation trimmed. Continue from the current task."
+    if tail and tail[0].role == "user":
+        first = tail[0]
+        tail[0] = first.model_copy(
+            update={"content": f"{reminder}\n\n[Recent user turn]\n{first.content}"}
+        )
+        prefix: list[Message] = []
+    else:
+        prefix = [Message(role="user", content=reminder)]
     return [
         *system_messages,
-        Message(
-            role="user",
-            content="[Reactive compact] Earlier conversation trimmed. Continue from the current task.",
-        ),
+        *prefix,
         *tail,
     ]
 

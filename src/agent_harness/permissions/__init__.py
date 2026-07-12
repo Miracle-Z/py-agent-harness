@@ -115,7 +115,17 @@ class PermissionPolicy:
     )
     # 会修改工作区或执行命令的工具，必须经过审批器确认后才能运行。
     always_ask_tools: frozenset[str] = field(
-        default_factory=lambda: frozenset({"write_file", "edit_file", "shell"})
+        default_factory=lambda: frozenset(
+            {
+                "write_file",
+                "edit_file",
+                "shell",
+                "memory_write",
+                "create_task",
+                "claim_task",
+                "complete_task",
+            }
+        )
     )
 
     def __post_init__(self) -> None:

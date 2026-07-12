@@ -76,8 +76,8 @@
 
 当前项目状态可以理解为：
 
-- 已覆盖：`s01_agent_loop`、`s02_tool_use`、`s03_permission`、`s04_hooks`、`s11_error_recovery`
-- 下一步重点：`s05_todo_write`、`s08_context_compact`、`s09_memory`、`s10_system_prompt`、`s12_task_system`
+- 已覆盖：`s01_agent_loop`、`s02_tool_use`、`s03_permission`、`s04_hooks`、`s05_todo_write`、`s08_context_compact`、`s09_memory`、`s10_system_prompt`、`s11_error_recovery`、`s12_task_system`
+- 下一步重点：`s06_subagent`、`s13_background_tasks`、`s15_agent_teams`、`s16_team_protocols`、`s17_autonomous_agents`、`s18_worktree_isolation`、`s19_mcp_plugin`
 - 微服务诊断阶段再引入：`s07_skill_loading`、`s19_mcp_plugin`、`s20_comprehensive`
 
 ## 项目结构
@@ -149,6 +149,10 @@ uv run agent-harness --provider openai --root .
 
 # OpenAI 兼容 endpoint
 uv run agent-harness --provider openai --base-url <openai-compatible-base-url> --model <model-id> --root .
+
+# 持久化并恢复会话；再次使用同一个 Session ID 会带回消息历史和 Todo
+uv run agent-harness chat --model <model-id> --root . --session refactor-auth "Inspect the auth refactor"
+uv run agent-harness chat --model <model-id> --root . --session refactor-auth "Continue the remaining work"
 ```
 
 常用测试和质量检查：
@@ -177,7 +181,7 @@ uv run mypy src
 
 ## 当前状态
 
-项目已完成 **M3：可靠性建设**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic/OpenAI Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
+项目已完成 **M4：长任务能力**。当前已具备基础 Agent Loop、消息模型、LLM 接口、Tool 注册表、工具参数 schema、Anthropic/OpenAI Tool Calling 协议适配，以及从模型请求工具、本地执行工具、回传工具结果到生成最终回答的闭环。
 
 M2 新增了 workspace 受限的代码操作工具：`read_file`、`write_file`、`edit_file`、`glob`、`search_text`、`shell`、`run_tests` 和 `git_diff`。这些工具可通过 `agent_harness.tools.create_coding_tool_registry()` 一次性注册到 AgentLoop。
 
@@ -189,7 +193,17 @@ M3 新增了权限审批、Hooks、Tracing 和错误恢复能力：
 - `RecoveryManager` 支持 429/529 瞬态错误重试、`max_tokens` 截断恢复、prompt/context too long 后 reactive compact。
 - M3 评测用例记录在 [evals/m3_reliability_cases.md](evals/m3_reliability_cases.md)。
 
-下一阶段进入 **M4：长任务能力**，重点是补齐 Todo、Session、上下文压缩、Memory、运行时 system prompt 和持久化任务图。
+M4 新增长任务状态与上下文治理能力：
+
+- `TodoManager` 和 `todo_write` 使用整表替换语义维护当前 Session 的执行清单。
+- `SessionStore` 将完整消息协议和 Todo 原子写入 `.sessions/`；CLI 通过 `--session <id>` 显式恢复。
+- `ContextManager` 按“大结果落盘 → 协议成组裁剪 → 旧结果占位 → LLM 摘要”的顺序主动压缩，上下文超限恢复复用同一套配对规则；任何有损压缩前都会把完整 transcript 写入 `.transcripts/`。
+- `MemoryStore` 使用 `.memory/*.md` 和稳定的 `MEMORY.md` 索引保存跨会话知识；索引进入 system prompt，按当前查询选出的最多 5 条正文作为不可信背景加入当前 user turn。
+- `SystemPromptBuilder` 根据真实工作目录、已注册工具、Memory、Todo 和任务状态在每个用户轮次组装并替换唯一的 system message。
+- `TaskStore` 使用 `.tasks/*.json` 保存依赖图，并通过 `create_task`、`list_tasks`、`get_task`、`claim_task`、`complete_task` 执行严格的状态转换。
+- M4 评测用例记录在 [evals/m4_long_task_cases.md](evals/m4_long_task_cases.md)。
+
+下一阶段进入 **M5：扩展能力**，重点是 MCP、Subagent 和后台任务。
 
 ## 当前流程图
 
@@ -205,7 +219,16 @@ uv run agent-harness
 创建 AnthropicClient/OpenAIClient + Coding Tool Registry
         |
         v
+可选加载 .sessions/<id>.json
+        |
+        v
+按工作区、工具、Memory、Todo、Task 组装 system prompt
+        |
+        v
 AgentLoop
+        |
+        +--> ContextManager 主动压缩
+        |       大结果落盘 -> 成组裁剪 -> 旧结果占位 -> 超阈值摘要
         |
         +--> PreLLMCall Hook / Tracing
         |
@@ -223,6 +246,7 @@ AgentLoop
         |
         +--> 如果模型不再请求工具：
                 Stop Hook
+                可选保存 Session
                 输出最终回答
 ```
 
@@ -239,6 +263,11 @@ AgentLoop
 | `shell` | 已实现，受限版，可审批 | 执行受限制命令 |
 | `run_tests` | 已实现，自定义命令可审批 | 运行项目测试命令 |
 | `git_diff` | 已实现 | 查看 Git diff |
+| `todo_write` / `todo_read` | M4 已实现 | 替换或读取当前 Session 的 Todo |
+| `compact` | M4 已实现 | 请求在下一轮模型调用前压缩上下文 |
+| `memory_write` / `memory_read` / `memory_search` | M4 已实现 | 持久化和按需加载跨会话 Memory |
+| `create_task` / `list_tasks` / `get_task` | M4 已实现 | 创建、列出和读取持久化任务图 |
+| `claim_task` / `complete_task` | M4 已实现 | 按依赖认领任务并完成、解锁下游 |
 
 后续能力入口：
 
@@ -248,7 +277,7 @@ AgentLoop
 | 工具权限审批 | 已实现 | M3 |
 | Hooks 与 Tracing | 已实现 | M3 |
 | 超时、重试与错误恢复 | 已实现 | M3 |
-| Todo、Session、上下文压缩、Memory | 未实现 | M4 |
+| Todo、Session、上下文压缩、Memory、任务图 | 已实现 | M4 |
 | MCP、Subagent、后台任务 | 未实现 | M5 |
 | 日志、指标、Trace 诊断工具 | 未实现 | M6 |
 | 隔离环境修复与人工审核 | 未实现 | M7 |

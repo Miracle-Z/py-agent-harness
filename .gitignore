@@ -22,5 +22,12 @@ build/
 dist/
 *.egg-info/
 
+# Agent runtime state
+.memory/
+.sessions/
+.tasks/
+.task_outputs/
+.transcripts/
+
 # OS
 .DS_Store
